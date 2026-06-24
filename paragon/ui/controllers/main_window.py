@@ -4,10 +4,11 @@ import traceback
 from PySide6 import QtCore
 from PySide6.QtCore import QSortFilterProxyModel
 from PySide6.QtGui import QIcon, QActionGroup, QAction
-from PySide6.QtWidgets import QInputDialog, QFontDialog, QMessageBox
+from PySide6.QtWidgets import QInputDialog, QFontDialog, QMessageBox, QFileDialog
 from paragon.ui import utils
 
 from paragon.core import backup
+from paragon.core import change_packages
 from paragon.model.game import Game
 from paragon.model.multi_model import MultiModel
 from paragon.model.node_model import NodeModel
@@ -46,6 +47,8 @@ class MainWindow(Ui_MainWindow):
         self.nodes_list.activated.connect(self._on_node_activated)
         self.multis_list.activated.connect(self._on_multi_activated)
         self.save_action.triggered.connect(self._on_save)
+        self.export_action.triggered.connect(self._on_export)
+        self.import_action.triggered.connect(self._on_import)
         self.reload_action.triggered.connect(self._on_reload)
         self.close_action.triggered.connect(self._on_close)
         self.quit_action.triggered.connect(self.close)
@@ -151,6 +154,9 @@ class MainWindow(Ui_MainWindow):
         self.ms.sm.transition("Load", main_state=self.ms, project=self.gs.project)
 
     def _on_save(self):
+        self._save()
+
+    def _save(self):
         if self.ms.config.backup != "None":
             try:
                 backup.backup(
@@ -180,6 +186,68 @@ class MainWindow(Ui_MainWindow):
                 )
         except:
             logging.exception("Save failed.")
+            self.error_dialog = ErrorDialog(traceback.format_exc())
+            self.error_dialog.show()
+
+    def _on_export(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Item Icons", None, "Paragon Item Icon Changes (*.json)"
+        )
+        if not path:
+            return
+        try:
+            logging.info("Saving before item icon export.")
+            self.gs.write_preprocessors.invoke(self.gs.data)
+            result = self.gs.data.write()
+            if self.main_widget.process_compile_result(result.script_compile_result):
+                QMessageBox.critical(
+                    self,
+                    "Script Compiler Error",
+                    "Some scripts failed to compile. See the script editor for details.",
+                )
+                return
+            count = change_packages.export_items(self.gs.project, path)
+            QMessageBox.information(
+                self,
+                "Export Complete",
+                f"Exported {count} item icon change{'s' if count != 1 else ''}.",
+            )
+        except:
+            logging.exception("Item icon export failed.")
+            self.error_dialog = ErrorDialog(traceback.format_exc())
+            self.error_dialog.show()
+
+    def _on_import(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Item Icons", None, "Paragon Item Icon Changes (*.json)"
+        )
+        if not path:
+            return
+        try:
+            result = change_packages.import_items(self.gs.project, self.gs.data, path)
+            details = [
+                f"Applied: {result.applied}",
+                f"Already applied: {result.already_applied}",
+                f"Conflicts: {len(result.conflicts)}",
+                f"Errors: {len(result.errors)}",
+                "",
+                "Imported item icon changes are now in memory. Use Save to write them.",
+            ]
+            if result.conflicts:
+                details.append("")
+                details.append("Conflicts:")
+                details.extend(result.conflicts[:20])
+                if len(result.conflicts) > 20:
+                    details.append(f"... and {len(result.conflicts) - 20} more.")
+            if result.errors:
+                details.append("")
+                details.append("Errors:")
+                details.extend(result.errors[:20])
+                if len(result.errors) > 20:
+                    details.append(f"... and {len(result.errors) - 20} more.")
+            QMessageBox.information(self, "Import Complete", "\n".join(details))
+        except:
+            logging.exception("Item icon import failed.")
             self.error_dialog = ErrorDialog(traceback.format_exc())
             self.error_dialog.show()
 

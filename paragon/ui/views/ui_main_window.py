@@ -20,10 +20,13 @@ class Ui_MainWindow(QMainWindow):
 
         self.file_menu = QMenu("File")
         self.save_action = QAction("Save")
+        self.export_action = QAction("Export Item Icons")
+        self.import_action = QAction("Import Item Icons")
         self.reload_action = QAction("Reload")
         self.close_action = QAction("Close")
         self.quit_action = QAction("Quit")
         self.file_menu.addAction(self.save_action)
+        self.file_menu.addActions([self.export_action, self.import_action])
         self.file_menu.addSeparator()
         self.file_menu.addActions([self.reload_action, self.close_action])
         self.file_menu.addSeparator()
