@@ -8,11 +8,10 @@ from typing import Any
 import yaml
 
 
-FORMAT = "paragon-item-icons-change-package"
+FORMAT = "paragon-items-change-package"
 VERSION = 1
 ITEM_TABLE = "items"
 ITEM_TYPE = "Item"
-ICON_FIELD = "icon"
 
 
 @dataclass
@@ -25,6 +24,7 @@ class ImportResult:
 
 def export_items(project, output_path: str) -> int:
     config_root = _config_root(project)
+    item_def = _item_definition(config_root, project.language.value)
     with tempfile.TemporaryDirectory() as clean_output:
         baseline = _load_data(project, config_root, clean_output)
         source = _load_data(project, config_root, project.output_path)
@@ -35,8 +35,11 @@ def export_items(project, output_path: str) -> int:
             "language": project.language.value,
             "project_name": project.name,
             "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "schema": {
+                "item": item_def,
+            },
             "changes": {
-                "items": _diff_item_icons(baseline, source),
+                "items": _diff_items(baseline, source, item_def),
             },
         }
     with open(output_path, "w", encoding="utf-8") as f:
@@ -52,8 +55,16 @@ def import_items(project, current_data, package_path: str) -> ImportResult:
     item_def = _item_definition(config_root, project.language.value)
     dest_rids = _item_rids_by_key(current_data)
     result = ImportResult()
+    item_fields = {spec.get("id"): spec for spec in _item_fields(item_def)}
     for item_change in package["changes"]["items"]:
-        _apply_icon_change(result, current_data, item_def, dest_rids, item_change)
+        _apply_item_change(
+            result,
+            current_data,
+            item_def,
+            item_fields,
+            dest_rids,
+            item_change,
+        )
     return result
 
 
@@ -67,7 +78,7 @@ def _read_package(path: str) -> dict[str, Any]:
 
 def _validate_package(project, package: dict[str, Any]) -> None:
     if package.get("format") != FORMAT:
-        raise ValueError("This is not a Paragon item icon change package.")
+        raise ValueError("This is not a Paragon item change package.")
     if package.get("version") != VERSION:
         raise ValueError(f"Unsupported item change package version {package.get('version')}.")
     if package.get("game") != project.game.value:
@@ -140,21 +151,14 @@ def _item_table(gd):
     return table
 
 
-def _snapshot_item_icons(gd) -> dict[str, int]:
-    return {
-        key: gd.int(rid, ICON_FIELD)
-        for key, rid in _item_rids_by_key(gd).items()
-    }
-
-
-def _ordered_item_icons(gd) -> list[tuple[int, str, int]]:
+def _ordered_items(gd) -> list[tuple[int, str, Any]]:
     table_rid, list_id = _item_table(gd)
     result = []
     for i in range(gd.list_size(table_rid, list_id)):
         rid = gd.list_get(table_rid, list_id, i)
         key = gd.key(rid)
         if key:
-            result.append((i, key, gd.int(rid, ICON_FIELD)))
+            result.append((i, key, rid))
     return result
 
 
@@ -169,67 +173,172 @@ def _item_rids_by_key(gd) -> dict[str, Any]:
     return result
 
 
-def _diff_item_icons(baseline, source) -> list[dict[str, Any]]:
-    base_icons = _snapshot_item_icons(baseline)
+def _diff_items(baseline, source, item_def: dict[str, Any]) -> list[dict[str, Any]]:
+    base_items = _item_rids_by_key(baseline)
     changes = []
-    for index, key, icon in _ordered_item_icons(source):
-        if base_icons.get(key) == icon:
+    fields = _item_fields(item_def)
+    seen_keys = set()
+    for index, key, rid in _ordered_items(source):
+        if key in seen_keys:
             continue
-        changes.append({"index": index, "iid": key, "icon": icon})
+        seen_keys.add(key)
+        changed_fields = _diff_item_fields(
+            baseline,
+            source,
+            base_items.get(key),
+            rid,
+            fields,
+        )
+        if not changed_fields:
+            continue
+        changes.append({"index": index, "iid": key, "fields": changed_fields})
     return changes
 
 
-def _apply_icon_change(
+def _diff_item_fields(
+    baseline,
+    source,
+    base_rid,
+    source_rid,
+    fields: list[dict[str, Any]],
+) -> dict[str, Any]:
+    changed_fields = {}
+    for spec in fields:
+        field_id = spec.get("id")
+        if not field_id:
+            continue
+        source_value = _item_field_value(source, source_rid, spec)
+        base_value = (
+            None if base_rid is None else _item_field_value(baseline, base_rid, spec)
+        )
+        if source_value != base_value:
+            changed_fields[field_id] = source_value
+    return changed_fields
+
+
+def _item_field_value(gd, rid, spec: dict[str, Any]) -> Any:
+    field_id = spec.get("id")
+    field_type = spec.get("type")
+    if field_type == "int":
+        return gd.int(rid, field_id)
+    if field_type in {"label", "message", "string"}:
+        return gd.string(rid, field_id)
+    if field_type == "bytes":
+        value = gd.bytes(rid, field_id)
+        return None if value is None else list(value)
+    if field_type == "float":
+        return gd.float(rid, field_id)
+    if field_type == "bool":
+        return gd.bool(rid, field_id)
+    raise ValueError(f"Unsupported Item field type '{field_type}' for field '{field_id}'.")
+
+
+def _apply_item_change(
     result: ImportResult,
     destination,
     item_def: dict[str, Any],
+    item_fields: dict[str, dict[str, Any]],
     dest_rids: dict[str, Any],
     change: dict[str, Any],
 ) -> None:
     key = change.get("iid") if isinstance(change, dict) else None
-    icon = change.get("icon") if isinstance(change, dict) else None
-    if not key or not isinstance(key, str) or not isinstance(icon, int):
-        result.errors.append(f"Malformed item icon change {change!r}.")
+    fields = change.get("fields") if isinstance(change, dict) else None
+    if not key or not isinstance(key, str) or not isinstance(fields, dict):
+        result.errors.append(f"Malformed item change {change!r}.")
         return
 
     if key in dest_rids:
-        _apply_update(result, destination, dest_rids[key], icon)
+        rid = dest_rids[key]
     else:
-        _apply_add(result, destination, item_def, dest_rids, key, icon)
+        table_rid, list_id = _item_table(destination)
+        rid = destination.list_add(table_rid, list_id)
+        _initialize_default_item(destination, rid, item_def)
+        destination.set_string(rid, _item_key_field(item_def), key)
+        dest_rids[key] = rid
+
+    applied = False
+    already_applied = True
+    for field_id, incoming_value in fields.items():
+        spec = item_fields.get(field_id)
+        if spec is None:
+            result.errors.append(f"Unknown Item field '{field_id}' for {key}.")
+            already_applied = False
+            continue
+        try:
+            current_value = _item_field_value(destination, rid, spec)
+            normalized_value = _normalize_item_field_value(spec, incoming_value)
+            if current_value == normalized_value:
+                continue
+            _set_item_field_value(destination, rid, spec, normalized_value)
+            applied = True
+            already_applied = False
+        except (TypeError, ValueError) as exc:
+            result.errors.append(f"Failed to apply field '{field_id}' for {key}: {exc}")
+            already_applied = False
+
+    if applied:
+        result.applied += 1
+    elif already_applied:
+        result.already_applied += 1
 
 
-def _apply_add(
-    result: ImportResult,
-    destination,
-    item_def: dict[str, Any],
-    dest_rids: dict[str, Any],
-    key: str,
-    incoming_value: int,
-) -> None:
-    table_rid, list_id = _item_table(destination)
-    rid = destination.list_add(table_rid, list_id)
-    _initialize_default_item(destination, rid, item_def)
-    destination.set_string(rid, _item_key_field(item_def), key)
-    destination.set_int(rid, ICON_FIELD, incoming_value)
-    dest_rids[key] = rid
-    result.applied += 1
+def _normalize_item_field_value(spec: dict[str, Any], value: Any) -> Any:
+    field_id = spec.get("id")
+    field_type = spec.get("type")
+    if field_type == "int":
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError("expected an integer")
+        return value
+    if field_type in {"label", "message", "string"}:
+        if value is not None and not isinstance(value, str):
+            raise TypeError("expected a string or null")
+        return value
+    if field_type == "bytes":
+        if not isinstance(value, list):
+            raise TypeError("expected a byte array")
+        if any(isinstance(v, bool) or not isinstance(v, int) for v in value):
+            raise TypeError("expected byte array values to be integers")
+        if any(v < 0 or v > 0xFF for v in value):
+            raise ValueError("byte array values must be between 0 and 255")
+        expected_length = spec.get("length")
+        if expected_length is not None and len(value) != expected_length:
+            raise ValueError(
+                f"expected byte array length {expected_length}, got {len(value)}"
+            )
+        return value
+    if field_type == "float":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError("expected a number")
+        return float(value)
+    if field_type == "bool":
+        if not isinstance(value, bool):
+            raise TypeError("expected a boolean")
+        return value
+    raise ValueError(f"Unsupported Item field type '{field_type}' for field '{field_id}'.")
 
 
-def _apply_update(
-    result: ImportResult,
-    destination,
-    rid,
-    incoming_value: int,
-) -> None:
-    destination.set_int(rid, ICON_FIELD, incoming_value)
-    result.applied += 1
+def _set_item_field_value(gd, rid, spec: dict[str, Any], value: Any) -> None:
+    field_id = spec.get("id")
+    field_type = spec.get("type")
+    if field_type == "int":
+        gd.set_int(rid, field_id, value)
+    elif field_type in {"label", "message", "string"}:
+        gd.set_string(rid, field_id, value)
+    elif field_type == "bytes":
+        gd.set_bytes(rid, field_id, value)
+    elif field_type == "float":
+        gd.set_float(rid, field_id, value)
+    elif field_type == "bool":
+        gd.set_bool(rid, field_id, value)
+    else:
+        raise ValueError(f"Unsupported Item field type '{field_type}' for field '{field_id}'.")
 
 
 def _initialize_default_item(gd, rid, item_def: dict[str, Any]) -> None:
     for spec in _item_fields(item_def):
         field_id = spec.get("id")
         field_type = spec.get("type")
-        if not field_id or field_id == ICON_FIELD:
+        if not field_id:
             continue
         if field_type in {"label", "message", "string"}:
             if gd.string(rid, field_id) is None:

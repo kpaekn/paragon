@@ -9,6 +9,7 @@ from paragon.ui import utils
 
 from paragon.core import backup
 from paragon.core import change_packages
+from paragon.core import fe14_icon_json
 from paragon.model.game import Game
 from paragon.model.multi_model import MultiModel
 from paragon.model.node_model import NodeModel
@@ -47,6 +48,7 @@ class MainWindow(Ui_MainWindow):
         self.nodes_list.activated.connect(self._on_node_activated)
         self.multis_list.activated.connect(self._on_multi_activated)
         self.save_action.triggered.connect(self._on_save)
+        self.save_json_action.triggered.connect(self._on_save_json)
         self.export_action.triggered.connect(self._on_export)
         self.import_action.triggered.connect(self._on_import)
         self.reload_action.triggered.connect(self._on_reload)
@@ -72,6 +74,7 @@ class MainWindow(Ui_MainWindow):
         self.change_font_action.triggered.connect(self._on_change_font)
 
         self._add_main_widget()
+        self.save_json_action.setVisible(self.gs.project.game == Game.FE14)
 
         self._setup_config()
 
@@ -156,6 +159,21 @@ class MainWindow(Ui_MainWindow):
     def _on_save(self):
         self._save()
 
+    def _on_save_json(self):
+        try:
+            logging.info("Saving FE14 icon BCH JSON.")
+            count = fe14_icon_json.save_icon_bch_json(self.gs.data)
+            self.statusBar().showMessage("Save JSON complete.", 5000)
+            QMessageBox.information(
+                self,
+                "Save JSON Complete",
+                f"Saved {count} texture sheet{'s' if count != 1 else ''}.",
+            )
+        except:
+            logging.exception("FE14 icon BCH JSON save failed.")
+            self.error_dialog = ErrorDialog(traceback.format_exc())
+            self.error_dialog.show()
+
     def _save(self):
         if self.ms.config.backup != "None":
             try:
@@ -191,12 +209,12 @@ class MainWindow(Ui_MainWindow):
 
     def _on_export(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Item Icons", None, "Paragon Item Icon Changes (*.json)"
+            self, "Export Items", None, "Paragon Item Changes (*.json)"
         )
         if not path:
             return
         try:
-            logging.info("Saving before item icon export.")
+            logging.info("Saving before item export.")
             self.gs.write_preprocessors.invoke(self.gs.data)
             result = self.gs.data.write()
             if self.main_widget.process_compile_result(result.script_compile_result):
@@ -210,16 +228,16 @@ class MainWindow(Ui_MainWindow):
             QMessageBox.information(
                 self,
                 "Export Complete",
-                f"Exported {count} item icon change{'s' if count != 1 else ''}.",
+                f"Exported {count} item change{'s' if count != 1 else ''}.",
             )
         except:
-            logging.exception("Item icon export failed.")
+            logging.exception("Item export failed.")
             self.error_dialog = ErrorDialog(traceback.format_exc())
             self.error_dialog.show()
 
     def _on_import(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import Item Icons", None, "Paragon Item Icon Changes (*.json)"
+            self, "Import Items", None, "Paragon Item Changes (*.json)"
         )
         if not path:
             return
@@ -231,7 +249,7 @@ class MainWindow(Ui_MainWindow):
                 f"Conflicts: {len(result.conflicts)}",
                 f"Errors: {len(result.errors)}",
                 "",
-                "Imported item icon changes are now in memory. Use Save to write them.",
+                "Imported item changes are now in memory. Use Save to write them.",
             ]
             if result.conflicts:
                 details.append("")

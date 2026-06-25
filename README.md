@@ -11,7 +11,7 @@ Paragon requires Rust and Python 3.8.x. You will also need to install the python
 1. Install dependencies into the Python environment by running `poetry install`.
 1. Render module templates by running `poetry run python scripts/render_templates.py`.
 1. Build the Rust code by running `poetry run maturin develop --release`.
-1. If everything succeeded, you can run the main script with the command `poetry run paragon/ui/main.py`.
+1. If everything succeeded, you can run the main script with the command `poetry run python paragon/ui/main.py`.
 
 ## Tools Using Paragon
 The following tools use Paragon features like import/export to edit FE13, FE14, and FE15. Take a look at the if you're interested!
